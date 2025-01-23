@@ -4,6 +4,8 @@ const { join } = require('path');
 
 const qrcode = require('qrcode-terminal');
 
+require('dotenv').config();
+
 function setConsoleLog(text) {
 	console.log(`============================== ${text}! ==============================`);
 	return;
@@ -62,6 +64,10 @@ async function fetchData(endpoint) {
 async function getWeatherPrediction(countyCode) {
     const request = await fetchData(`https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4=${countyCode}`);
     const response = request['status_code'] == 200 ? request['response'] : null;
+
+	console.log(countyCode);
+	console.log(request);
+	console.log(response);
 
 	if (response === null) {
 		return response;
