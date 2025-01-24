@@ -3,6 +3,11 @@ const { writeFileSync } = require('fs');
 const { join } = require('path');
 
 const qrcode = require('qrcode-terminal');
+const schedule = require('node-schedule');
+const moment = require('moment-timezone');
+
+const hourStart = process.env.WA_MESSAGE_HOUR_START;
+const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
 
 require('dotenv').config();
 
@@ -94,8 +99,8 @@ async function getWeatherPrediction(countyCode) {
 		return response;
 	}
 
-    const weathers = response.data[0].cuaca[0].concat(response.data[0].cuaca[1].slice(0, 3));
-	const currentDate = `📑${getDateFormat(weathers[0].datetime.split('T')[0])}\n`;
+    const weathers = response.data[0].cuaca[1].concat(response.data[0].cuaca[2].slice(0, 3)).slice(2);
+	const currentDate = `📑 ${getDateFormat(weathers[0].datetime.split('T')[0])}`;
 	const currentTimezone = 'WIB';
 
     const messages = [];
@@ -126,36 +131,21 @@ async function createSocket() {
 	sock.ev.on('connection.update', (update) => {
 		const { connection, lastDisconnect, qr } = update;
 
-		if (connection === 'close') {
-			const shouldReconnect = lastDisconnect.error?.output?.statusCode !== 401;
-			setConsoleLog('CONNECTION CLOSED');
-		
-			if (shouldReconnect) {
-				setConsoleLog('RECONNECTING');
-				createSocket();
-			}
-
-		} else if (connection === 'open') {
-			setConsoleLog('CONNECTED!');
-		}
-
 		if (qr) {
 			setConsoleLog('SCAN TO AUTHENTICATE');
 			qrcode.generate(qr, { small: true });
 		}
-	});
-
-	sock.ev.on('connection.update', (update) => {
-		const { connection, lastDisconnect } = update;
 
 		if (connection === 'close') {
-			setConsoleLog('RECONNECTING');
-			if (lastDisconnect?.error?.output?.statusCode === 428) {
-				sock.connect();
+			const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
+			setConsoleLog('CONNECTION CLOSED');
+			
+			if (shouldReconnect) {
+				setConsoleLog('RECONNECTING');
+				createSocket();
 			}
-
 		} else if (connection === 'open') {
-			setConsoleLog('RECONNECTED');
+			setConsoleLog('CONNECTED!');
 		}
 	});
 
@@ -174,37 +164,68 @@ async function createSocket() {
 		}
 	});
 
-	const sendMessageToGroup = async (groupJid, message) => {
-		try {
-			await sock.sendMessage(groupJid, { text: message });
-			setConsoleLog('MESSAGE SENT');
-			console.log('Message sent to group:', groupJid);
-		} catch (error) {
-			setConsoleLog('ERROR');
-			console.error('Error sending message:', error);
+	const sendMessageToGroup = async (groupJid, message, retries = 3) => {
+		while (retries > 0) {
+			try {
+				await sock.sendMessage(groupJid, { text: message });
+				setConsoleLog('MESSAGE SENT');
+				console.log('Message sent to group:', groupJid);
+				return;
+
+			} catch (error) {
+				retries -= 1;
+				setConsoleLog('ERROR SENDING MESSAGE, RETRYING...');
+				console.error('Error sending message:', error);
+
+				if (error.output?.statusCode === 428 && retries > 0) {
+					await createSocket();
+				}
+
+				await new Promise(resolve => setTimeout(resolve, 5000));
+			}
 		}
+	
+		setConsoleLog('FAILED TO SEND MESSAGE AFTER RETRIES');
 	};
 
-	setInterval(async () => {
-		const greet = [
-			'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
-			'Izinkan saya sebagai bot WAWE menginformasikan  prakiraan cuaca dari BMKG untuk besok 💫'
-		];
-		
-		sendMessageToGroup(process.env.WA_GROUP_ID, greet.join('\n'));
-
-	}, 60000);
-
-	setInterval(async () => {
-		const message = await getWeatherPrediction(process.env.WA_COUNTY_CODE);
-		
-		if (message !== null) {
-			sendMessageToGroup(process.env.WA_GROUP_ID, message.join('\n\n'));
+	schedule.scheduleJob(
+		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, () => {
+			try {
+				setConsoleLog('SENDING GREET MESSAGE');
+				const greet = [
+					'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
+					'Izinkan saya sebagai bot WAWE menginformasikan prakiraan cuaca dari *BMKG* untuk besok 💫'
+				];
+				
+				sendMessageToGroup(process.env.WA_GROUP_ID, greet.join('\n'));
+	
+			} catch (error) {
+				setConsoleLog('ERROR IN GREETING MESSAGE');
+				console.error(error);
+	
+			}
 		}
+	);
 
-	}, 60000);
+	schedule.scheduleJob(
+		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, async () => {
+			try {
+				setConsoleLog('SENDING WEATHER MESSAGE');
+				const message = await getWeatherPrediction(process.env.WA_COUNTY_CODE);
+				if (message !== null) {
+					sendMessageToGroup(process.env.WA_GROUP_ID, message.join('\n\n'));
+				}
+	
+			} catch (error) {
+				setConsoleLog('ERROR IN PREDICTION MESSAGE');
+				console.error(error);
+	
+			}
+		}
+	);
 }
 
+console.log('Current time in Asia/Jakarta:', moment().tz('Asia/Jakarta').format());
 createSocket();
 
 // '☀🌤⛅🌥☁🌦🌧⛈🌩☄ 📑💫😃👋🌃'
