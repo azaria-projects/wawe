@@ -5,6 +5,7 @@
 .env
 
 package-lock.json
+test.js
 
 /node_modules
 /auth_info

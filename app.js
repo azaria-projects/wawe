@@ -34,10 +34,35 @@ function getCompass(shorthand) {
     };
 }
 
+function getWeatherEmot(weatherNumber) {
+	switch (weatherNumber) {
+		case 1:
+			return '☀';
+		case 61:
+			return '🌦';
+		case 2:
+			return '🌤';																																																																										
+		default:
+			return '🌧';
+	}
+}
+
 function getDatetimeFormat(stringdate) {
     const date = stringdate.split('T')[0];
     const time = stringdate.split('T')[1].replace("Z", "");
     return `${date} ${time}`;
+}
+
+function getDateFormat(date) {
+	return new Intl.DateTimeFormat(
+		'id-ID', 
+		{ 
+			weekday: 'long', 
+			day: 'numeric', 
+			month: 'long', 
+			year: 'numeric' 
+		}
+	).format(new Date(date));
 }
 
 function getResponseFormat(status_code, status, response) {
@@ -69,21 +94,24 @@ async function getWeatherPrediction(countyCode) {
 		return response;
 	}
 
-    const weathers = response.data[0].cuaca[0];
+    const weathers = response.data[0].cuaca[0].concat(response.data[0].cuaca[1].slice(0, 3));
+	const currentDate = `📑${getDateFormat(weathers[0].datetime.split('T')[0])}\n`;
+	const currentTimezone = 'WIB';
 
     const messages = [];
+	messages.push(currentDate);
+
     for (let i = 0; i < weathers.length; i++) {
         const weather = weathers[i];
         const message = [
-            `Tanggal & Waktu: ${getDatetimeFormat(weather.datetime)}`,
-            `Cuaca: ${weather.weather_desc}`,
-            `Suhu: ${weather.t} °C`,
-            `Kelembapan: ${weather.hu} %`,
-            `Kecepatan Angin: ${weather.ws} km/jam`,
-            `Asal Angin: ${getCompass(weather.wd)}`,
-            `Arah Angin: ${getCompass(weather.wd_to)}`
-        ]
-
+            `${weather.datetime.split('T')[1].replace("Z", "")} ${currentTimezone}`,
+            `*${getWeatherEmot(weather.weather)} ${weather.weather_desc} / ${weather.t} °C*\n`,
+            `Kelembapan : ${weather.hu} %`,
+            `Asal Angin : ${getCompass(weather.wd)}`,
+            `Arah Angin : ${getCompass(weather.wd_to)}`,
+			`Kecepatan : ${weather.ws} km/jam`
+        ];
+		
         messages.push(message.join('\n'));
     }
 
@@ -132,9 +160,8 @@ async function createSocket() {
 	});
 
 	sock.ev.on('messages.upsert', async (messageUpdate) => {
-		setConsoleLog('NEW MESSAGES');
-
 		if (messageUpdate.type === 'notify' && messageUpdate.messages) {
+			setConsoleLog('NEW MESSAGES');
 			messageUpdate.messages.forEach((message) => {
 				const jid = message.key.remoteJid;
 
@@ -159,7 +186,18 @@ async function createSocket() {
 	};
 
 	setInterval(async () => {
+		const greet = [
+			'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
+			'Izinkan saya sebagai bot WAWE menginformasikan  prakiraan cuaca dari BMKG untuk besok 💫'
+		];
+		
+		sendMessageToGroup(process.env.WA_GROUP_ID, greet.join('\n'));
+
+	}, 60000);
+
+	setInterval(async () => {
 		const message = await getWeatherPrediction(process.env.WA_COUNTY_CODE);
+		
 		if (message !== null) {
 			sendMessageToGroup(process.env.WA_GROUP_ID, message.join('\n\n'));
 		}
@@ -168,3 +206,6 @@ async function createSocket() {
 }
 
 createSocket();
+
+// '☀🌤⛅🌥☁🌦🌧⛈🌩☄ 📑💫😃👋🌃'
+// https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4=34.01.06.2002
