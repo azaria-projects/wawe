@@ -6,9 +6,6 @@ const qrcode = require('qrcode-terminal');
 const schedule = require('node-schedule');
 const moment = require('moment-timezone');
 
-const hourStart = process.env.WA_MESSAGE_HOUR_START;
-const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
-
 require('dotenv').config();
 
 function setConsoleLog(text) {
@@ -187,6 +184,9 @@ async function createSocket() {
 	
 		setConsoleLog('FAILED TO SEND MESSAGE AFTER RETRIES');
 	};
+
+	const hourStart = process.env.WA_MESSAGE_HOUR_START;
+	const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
 
 	schedule.scheduleJob(
 		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, () => {
