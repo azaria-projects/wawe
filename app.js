@@ -1,10 +1,17 @@
 const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { writeFileSync } = require('fs');
 const { join } = require('path');
+const { makeInMemoryStore } = require('@whiskeysockets/baileys');
 
 const qrcode = require('qrcode-terminal');
 const schedule = require('node-schedule');
 const moment = require('moment-timezone');
+
+const store = makeInMemoryStore({});
+
+var isReconnecting = false;
+var isConnected = false;
+var connectionDelay = 0;
 
 require('dotenv').config();
 
@@ -122,10 +129,29 @@ async function getWeatherPrediction(countyCode) {
 
 async function createSocket() {
 	const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-	const sock = makeWASocket({ auth: state, });
+	const sock = makeWASocket({ auth: state, });	
+
+	store.readFromFile('./session.json');
+	store.bind(sock.ev);
+
+	const reconnectWithBackoff = async (attempt = 1) => {
+		connectionDelay = Math.min(30, Math.pow(2, attempt)) * 1000;
+		setConsoleLog(`RETRYING CONNECTION TO AUTHENTICATE IN ${connectionDelay / 1000} SECONDS`);
+
+		await new Promise(resolve => setTimeout(resolve, connectionDelay));
+		
+		connectionDelay = 0;
+		return createSocket();
+	};
 
 	sock.ev.on('creds.update', saveCreds);
-	sock.ev.on('connection.update', (update) => {
+
+	sock.ev.on('connection.error', (error) => {
+		setConsoleLog('CONNECTION ERROR');
+		console.error('WebSocket Connection Error:', error);
+	});
+
+	sock.ev.on('connection.update', async (update) => {
 		const { connection, lastDisconnect, qr } = update;
 
 		if (qr) {
@@ -134,15 +160,18 @@ async function createSocket() {
 		}
 
 		if (connection === 'close') {
+			isConnected = false;
 			const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
 			setConsoleLog('CONNECTION CLOSED');
-			
-			if (shouldReconnect) {
-				setConsoleLog('RECONNECTING');
-				createSocket();
+			if (shouldReconnect && isReconnecting !== true) {
+				isReconnecting = true;
+				await reconnectWithBackoff();
+				isReconnecting = false;
 			}
 		} else if (connection === 'open') {
-			setConsoleLog('CONNECTED!');
+			isConnected = true;
+			store.writeToFile('./session.json');
+			setConsoleLog('CONNECTED');
 		}
 	});
 
@@ -161,9 +190,30 @@ async function createSocket() {
 		}
 	});
 
+	const checkConnection = async ()=> {
+		if (isConnected === false && isReconnecting === false) {
+			isReconnecting = true;
+			await reconnectWithBackoff();
+			isReconnecting = false;
+
+			checkConnection();
+			
+		} else if (isConnected === false && isReconnecting) {
+			setConsoleLog(`AWAITING SYSTEM RECONNECTION IN ${connectionDelay}`);
+			await new Promise(resolve => setTimeout(resolve, connectionDelay));
+
+			checkConnection();
+
+		} else {
+			return true;
+		}
+	};
+
 	const sendMessageToGroup = async (groupJid, message, retries = 3) => {
 		while (retries > 0) {
 			try {
+				await checkConnection();
+
 				await sock.sendMessage(groupJid, { text: message });
 				setConsoleLog('MESSAGE SENT');
 				console.log('Message sent to group:', groupJid);
@@ -171,7 +221,7 @@ async function createSocket() {
 
 			} catch (error) {
 				retries -= 1;
-				setConsoleLog('ERROR SENDING MESSAGE, RETRYING...');
+				setConsoleLog('ERROR SENDING MESSAGE, RETRYING ...');
 				console.error('Error sending message:', error);
 
 				if (error.output?.statusCode === 428 && retries > 0) {
@@ -188,24 +238,24 @@ async function createSocket() {
 	const hourStart = process.env.WA_MESSAGE_HOUR_START;
 	const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
 
-	schedule.scheduleJob(
-		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, () => {
-			try {
-				setConsoleLog('SENDING GREET MESSAGE');
-				const greet = [
-					'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
-					'Izinkan saya sebagai bot WAWE menginformasikan prakiraan cuaca dari *BMKG* untuk besok 💫'
-				];
+	// schedule.scheduleJob(
+	// 	{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, () => {
+	// 		try {
+	// 			setConsoleLog('SENDING GREET MESSAGE');
+	// 			const greet = [
+	// 				'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
+	// 				'Izinkan saya sebagai bot WAWE menginformasikan prakiraan cuaca dari *BMKG* untuk besok 💫'
+	// 			];
 				
-				sendMessageToGroup(process.env.WA_GROUP_ID, greet.join('\n'));
+	// 			sendMessageToGroup(process.env.WA_GROUP_ID, greet.join('\n'));
 	
-			} catch (error) {
-				setConsoleLog('ERROR IN GREETING MESSAGE');
-				console.error(error);
+	// 		} catch (error) {
+	// 			setConsoleLog('ERROR IN GREETING MESSAGE');
+	// 			console.error(error);
 	
-			}
-		}
-	);
+	// 		}
+	// 	}
+	// );
 
 	schedule.scheduleJob(
 		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, async () => {

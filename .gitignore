@@ -6,6 +6,7 @@
 
 package-lock.json
 app-test.js
+session.json
 
 /node_modules
 /auth_info
