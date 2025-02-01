@@ -7,11 +7,9 @@ const qrcode = require('qrcode-terminal');
 const schedule = require('node-schedule');
 const moment = require('moment-timezone');
 
-const store = makeInMemoryStore({});
-
-var isReconnecting = false;
+var sock;
 var isConnected = false;
-var connectionDelay = 0;
+var reconnectCount = 0;
 
 require('dotenv').config();
 
@@ -47,12 +45,44 @@ function getWeatherEmot(weatherNumber) {
 	switch (weatherNumber) {
 		case 1:
 			return '☀';
+		case 2:
+			return '🌤';
+		case 3:
+			return '☁';
+		case 17:
+			return '⛈';
 		case 61:
 			return '🌦';
-		case 2:
-			return '🌤';																																																																										
 		default:
 			return '🌧';
+	}
+}
+
+function getWindStatus(wind) {
+	if (wind <= 6) {
+		return 'Angin Tidak Terasa';
+	} else if (wind > 5 && wind <= 16) {
+		return 'Angin lembut';
+	} else if (wind > 16 && wind <= 27) {
+		return 'Angin Kencang';
+	} else if (wind > 27) {
+		return 'Angin Badai';
+	} else {
+		return 'Tidak Terukur';
+	}
+}
+
+function getTemperature(temp) {
+	if (temp <= 27) {
+		return 'Dingin';
+	} else if (temp > 27 && temp <= 30) {
+		return 'Biasa';
+	} else if  (temp > 30 && temp <= 32) {
+		return 'Hangat';
+	} else if  (temp > 32) {
+		return 'Panas';
+	} else {
+		return 'Tidak Terukur';
 	}
 }
 
@@ -80,6 +110,15 @@ function getResponseFormat(status_code, status, response) {
         "status" : status,
         "response" : response
     };
+}
+
+function getGreetMessage() {
+	const greet = [
+		'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
+		'Izinkan saya sebagai bot WAWE menginformasikan prakiraan cuaca dari *BMKG* untuk besok 💫'
+	];
+
+	return greet.join('\n');
 }
 
 async function fetchData(endpoint) {
@@ -115,42 +154,44 @@ async function getWeatherPrediction(countyCode) {
         const message = [
             `${weather.datetime.split('T')[1].replace("Z", "")} ${currentTimezone}`,
             `*${getWeatherEmot(weather.weather)} ${weather.weather_desc} / ${weather.t} °C*\n`,
+			`Suhu : ${getTemperature(parseInt(weather.t))}`,
             `Kelembapan : ${weather.hu} %`,
             `Asal Angin : ${getCompass(weather.wd)}`,
             `Arah Angin : ${getCompass(weather.wd_to)}`,
-			`Kecepatan : ${weather.ws} km/jam`
+			`Kecepatan : ${getWindStatus(parseFloat(weather.ws))} (${weather.ws} km/jam)`
         ];
 		
         messages.push(message.join('\n'));
     }
 
-    return messages;
+    return messages.join('\n\n');
 }
 
 async function createSocket() {
 	const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-	const sock = makeWASocket({ auth: state, });	
 
-	store.readFromFile('./session.json');
-	store.bind(sock.ev);
+	if (sock) {
+		sock.ev.removeAllListeners();
+		sock.end();
+	}
 
-	const reconnectWithBackoff = async (attempt = 1) => {
-		connectionDelay = Math.min(30, Math.pow(2, attempt)) * 1000;
-		setConsoleLog(`RETRYING CONNECTION TO AUTHENTICATE IN ${connectionDelay / 1000} SECONDS`);
+	sock = makeWASocket({ auth: state, });
 
-		await new Promise(resolve => setTimeout(resolve, connectionDelay));
+	const reconnect = async () => {
+		if (reconnectCount >= 5) {
+			setConsoleLog('UNABLE TO RECONNECT! EXITING');
+			await new Promise(resolve => setTimeout(resolve, 5000));
+			process.exit(1);
+		}
+
+		setConsoleLog('CONNECTION CLOSED! RECONNECTING IN 5S');
+		reconnectCount += 1;
 		
-		connectionDelay = 0;
-		return createSocket();
+		await new Promise(resolve => setTimeout(resolve, 5000));
+		createSocket();
 	};
 
 	sock.ev.on('creds.update', saveCreds);
-
-	sock.ev.on('connection.error', (error) => {
-		setConsoleLog('CONNECTION ERROR');
-		console.error('WebSocket Connection Error:', error);
-	});
-
 	sock.ev.on('connection.update', async (update) => {
 		const { connection, lastDisconnect, qr } = update;
 
@@ -161,16 +202,18 @@ async function createSocket() {
 
 		if (connection === 'close') {
 			isConnected = false;
-			const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== 401;
-			setConsoleLog('CONNECTION CLOSED');
-			if (shouldReconnect && isReconnecting !== true) {
-				isReconnecting = true;
-				await reconnectWithBackoff();
-				isReconnecting = false;
+
+			if (lastDisconnect?.error?.output?.statusCode !== 401) {
+				await reconnect();
+			} else {
+				setConsoleLog('LOGGED OUT: PLEASE DELETE AUTH FILES AND RESTART');
+				process.exit(1);
 			}
+
 		} else if (connection === 'open') {
 			isConnected = true;
-			store.writeToFile('./session.json');
+			reconnectCount = 0;
+
 			setConsoleLog('CONNECTED');
 		}
 	});
@@ -180,102 +223,43 @@ async function createSocket() {
 			setConsoleLog('NEW MESSAGES');
 			messageUpdate.messages.forEach((message) => {
 				const jid = message.key.remoteJid;
-
-				if (jid.endsWith('@g.us')) {
-					console.log('Group JID:', jid);
-				} else {
-					console.log('Individual JID:', jid);
-				}
+				jid.endsWith('@g.us') 
+					? console.log('Group JID:', jid) 
+					: console.log('Individual JID:', jid);
 			});
 		}
 	});
 
-	const checkConnection = async ()=> {
-		if (isConnected === false && isReconnecting === false) {
-			isReconnecting = true;
-			await reconnectWithBackoff();
-			isReconnecting = false;
-
-			checkConnection();
-			
-		} else if (isConnected === false && isReconnecting) {
-			setConsoleLog(`AWAITING SYSTEM RECONNECTION IN ${connectionDelay}`);
-			await new Promise(resolve => setTimeout(resolve, connectionDelay));
-
-			checkConnection();
-
-		} else {
-			return true;
-		}
+	const sendMessageToGroup = async (groupJid, message) => {
+		await sock.sendMessage(groupJid, { text: message });
+		setConsoleLog(`MESSAGE SENT TO ${groupJid}`);
 	};
 
-	const sendMessageToGroup = async (groupJid, message, retries = 3) => {
-		while (retries > 0) {
-			try {
-				await checkConnection();
-
-				await sock.sendMessage(groupJid, { text: message });
-				setConsoleLog('MESSAGE SENT');
-				console.log('Message sent to group:', groupJid);
-				return;
-
-			} catch (error) {
-				retries -= 1;
-				setConsoleLog('ERROR SENDING MESSAGE, RETRYING ...');
-				console.error('Error sending message:', error);
-
-				if (error.output?.statusCode === 428 && retries > 0) {
-					await createSocket();
-				}
-
-				await new Promise(resolve => setTimeout(resolve, 5000));
-			}
-		}
-	
-		setConsoleLog('FAILED TO SEND MESSAGE AFTER RETRIES');
-	};
-
-	const hourStart = process.env.WA_MESSAGE_HOUR_START;
+	const countryCode = process.env.WA_COUNTY_CODE;
 	const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
-
-	// schedule.scheduleJob(
-	// 	{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, () => {
-	// 		try {
-	// 			setConsoleLog('SENDING GREET MESSAGE');
-	// 			const greet = [
-	// 				'Selamat Sore Bapak dan Ibu yang ada di Kalurahan Srikayangan 😃👋🌃\n',
-	// 				'Izinkan saya sebagai bot WAWE menginformasikan prakiraan cuaca dari *BMKG* untuk besok 💫'
-	// 			];
-				
-	// 			sendMessageToGroup(process.env.WA_GROUP_ID, greet.join('\n'));
+	const hourStart = process.env.WA_MESSAGE_HOUR_START;
 	
-	// 		} catch (error) {
-	// 			setConsoleLog('ERROR IN GREETING MESSAGE');
-	// 			console.error(error);
-	
-	// 		}
-	// 	}
-	// );
-
 	schedule.scheduleJob(
 		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, async () => {
 			try {
-				setConsoleLog('SENDING WEATHER MESSAGE');
-				const message = await getWeatherPrediction(process.env.WA_COUNTY_CODE);
-				if (message !== null) {
-					sendMessageToGroup(process.env.WA_GROUP_ID, message.join('\n\n'));
+				const message = await getWeatherPrediction(countryCode);
+				const greet = getGreetMessage();
+
+				while (!isConnected || reconnectCount !== 0) {
+					await new Promise(resolve => setTimeout(resolve, 5000));
 				}
-	
+
+				await sendMessageToGroup(process.env.WA_GROUP_ID, greet);
+				await sendMessageToGroup(process.env.WA_GROUP_ID, message);
+				
 			} catch (error) {
-				setConsoleLog('ERROR IN PREDICTION MESSAGE');
+				setConsoleLog('ERROR IN SENDING MESSAGE');
 				console.error(error);
-	
 			}
 		}
 	);
 }
 
-console.log('Current time in Asia/Jakarta:', moment().tz('Asia/Jakarta').format());
 createSocket();
 
 // '☀🌤⛅🌥☁🌦🌧⛈🌩☄ 📑💫😃👋🌃'
