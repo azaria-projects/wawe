@@ -9,6 +9,7 @@ const moment = require('moment-timezone');
 
 var sock;
 var isConnected = false;
+var isJobCreated = false;
 var reconnectCount = 0;
 
 require('dotenv').config();
@@ -167,6 +168,37 @@ async function getWeatherPrediction(countyCode) {
     return messages.join('\n\n');
 }
 
+async function createJobs(sock) {
+	const countryCode = process.env.WA_COUNTY_CODE;
+	const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
+	const hourStart = process.env.WA_MESSAGE_HOUR_START;
+
+	schedule.scheduleJob(
+		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, async () => {
+			try {
+				const message = await getWeatherPrediction(countryCode);
+				const greet = getGreetMessage();
+
+				while (!isConnected || reconnectCount !== 0) {
+					await new Promise(resolve => setTimeout(resolve, 5000));
+				}
+
+				await sock.sendMessage(process.env.WA_GROUP_ID, { text: greet });
+				setConsoleLog(`MESSAGE SENT TO ${process.env.WA_GROUP_ID}`);
+
+				await sock.sendMessage(process.env.WA_GROUP_ID, { text: message });
+				setConsoleLog(`MESSAGE SENT TO ${process.env.WA_GROUP_ID}`);
+				
+			} catch (error) {
+				setConsoleLog('ERROR IN SENDING MESSAGE');
+				console.error(error);
+			}
+		}
+	);
+
+	isJobCreated = true;
+}
+
 async function createSocket() {
 	const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
 
@@ -230,37 +262,9 @@ async function createSocket() {
 		}
 	});
 
-	const sendMessageToGroup = async (groupJid, message) => {
-		await sock.sendMessage(groupJid, { text: message });
-		setConsoleLog(`MESSAGE SENT TO ${groupJid}`);
-	};
-
-	const countryCode = process.env.WA_COUNTY_CODE;
-	const minuteStart = process.env.WA_MESSAGE_MINUTE_START;
-	const hourStart = process.env.WA_MESSAGE_HOUR_START;
-	
-	schedule.scheduleJob(
-		{ hour: hourStart, minute: minuteStart, tz: 'Asia/Jakarta' }, async () => {
-			try {
-				const message = await getWeatherPrediction(countryCode);
-				const greet = getGreetMessage();
-
-				while (!isConnected || reconnectCount !== 0) {
-					await new Promise(resolve => setTimeout(resolve, 5000));
-				}
-
-				await sendMessageToGroup(process.env.WA_GROUP_ID, greet);
-				await sendMessageToGroup(process.env.WA_GROUP_ID, message);
-				
-			} catch (error) {
-				setConsoleLog('ERROR IN SENDING MESSAGE');
-				console.error(error);
-			}
-		}
-	);
+	if (!isJobCreated) {
+		createJobs(sock);
+	}
 }
 
 createSocket();
-
-// '☀🌤⛅🌥☁🌦🌧⛈🌩☄ 📑💫😃👋🌃'
-// https://api.bmkg.go.id/publik/prakiraan-cuaca?adm4=34.01.06.2002
